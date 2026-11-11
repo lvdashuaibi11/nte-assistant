@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>异环助手 · 本地看板</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">异</div>
+      <div>
+        <h1>异环助手 <span class="ver">S2 · 本地 Web 版</span></h1>
+        <p class="sub">异环游戏内每日签到 · 多账号实时信息</p>
+      </div>
+    </div>
+    <div class="chips" id="chips"></div>
+  </header>
+
+  <div class="notice">
+    <div class="notice-title">使用前请确认</div>
+    <ul>
+      <li>纯本地、个人自用，不分发、不代签；所有请求保持低频串行，随时可「一键停用自动化」。</li>
+      <li><b>写操作默认关闭</b>：这是安全默认值，关闭时点签到不会提交任何请求。需要签到请先到「设置」打开「允许写操作」；当日已成功或服务端判定已签的账号会被幂等跳过，不会重复提交。</li>
+      <li><b>周本次数已启用（第四项）</b>：<code>roleHome</code> 按角色条件性下发 <code>weekcopiesremainCnt</code>（本周剩余次数，<code>0</code> = 已打完）。有字段显示真实 <code>x/3</code>；没有字段（存档未同步，比如刚打完还在游戏里）显示「—」并标「未同步」，<b>绝不把官方 H5 的 <code>3/3</code> 兜底常量伪装成实时数据</b>。分母 3 是前端常量，本项不计入提醒。</li>
+      <li><b>抽卡统计已常驻</b>：官方 <code>gacha</code> 只读接口，按卡池列出每个角色/弧盘的<b>获取花费抽数</b>与逐次出货累计抽数；中文名来自官方角色字典，未覆盖的只显示 ID（可点击自定义别名）。出货时间只认 <code>timeStamp</code>，不写任何官方数据。</li>
+      <li><b>账号显示可自定义</b>：点卡片标题旁的 ✎ 可改标题 / 副标题显示内容，随时「还原原显示」；只作用于本机浏览器显示层，不写数据库、不改官方数据。账号卡片末尾的「抽卡统计」<b>只查看本地已保存的快照，不刷新、不入队、不发任何官方请求</b>。</li>
+      <li><b>签到详情 / 补签 / 呗果</b>：卡片上的「签到详情」只读拉取<b>呗果余额</b>、补签次数与<b>本月累计签到奖励表</b>（<b>环石已加粗</b>，勾选 = 已签，高亮 = 今天），不发任何写请求；「补签」会真正提交官方 <code>resign</code>，每次消耗 200 呗果、每月上限 3 次，且官方要求<b>当日已签到</b>后才能补，补的是「当日签到后下一日」的奖励。</li>
+    </ul>
+  </div>
+
+  <section class="summary" id="summary"></section>
+
+  <div class="toolbar">
+    <button class="btn primary" id="btnRefreshAll">刷新全部数据</button>
+    <button class="btn" id="btnSignAll">一键签到</button>
+    <span class="sep"></span>
+    <button class="btn" id="btnGachaRefresh">刷新抽卡统计</button>
+    <span class="sep"></span>
+    <button class="btn" id="btnAuth">手机号 + 验证码授权</button>
+    <button class="btn" id="btnImport">导入现有 TOKEN.txt</button>
+    <button class="btn ghost" id="btnSettings">设置</button>
+    <span class="hint" id="toolbarHint"></span>
+  </div>
+
+  <main id="accounts" class="accounts"></main>
+
+  <section class="gacha-section" id="gachaSection">
+    <div class="gacha-head">
+      <h2>抽卡统计 <span class="tag" id="gachaMeta">载入中…</span></h2>
+      <div class="gacha-head-actions">
+        <button class="btn" id="btnGachaRefreshAll">抓取全部账号</button>
+        <button class="btn ghost" id="btnGachaShowAll" hidden>显示全部账号</button>
+        <button class="btn ghost" id="btnGachaToggle">收起</button>
+      </div>
+    </div>
+    <div id="gachaBody">
+      <div class="gacha-filter" id="gachaFilterBar" hidden>
+        <span id="gachaFilterText"></span>
+        <span class="gacha-filter-note">仅查看本地快照 · 未发起刷新</span>
+      </div>
+      <p class="gacha-note" id="gachaNotes"></p>
+      <div class="empty" id="gachaEmpty">还没有抽卡快照，点「抓取全部账号」开始一次只读抓取。</div>
+      <div id="gachaList"></div>
+    </div>
+  </section>
+
+  <section class="panels">
+    <div class="panel">
+      <h2>任务与队列 <span class="tag" id="queueTag"></span></h2>
+      <div id="jobs" class="jobs"></div>
+    </div>
+    <div class="panel">
+      <h2>脱敏日志 <span class="tag">仅本地</span></h2>
+      <div id="logs" class="logs"></div>
+    </div>
+  </section>
+
+  <details class="help">
+    <summary>使用说明 / 数据口径 / 合规边界</summary>
+    <div class="help-body">
+      <p><b>怎么开始：</b>点「导入现有 TOKEN.txt」可免短信复用已验证的 accessToken；或点「手机号 + 验证码授权」新增账号。授权后点账号卡片上的「刷新数据」，即可看到四项数值。</p>
+      <p><b>前三项数据口径：</b>本性像素、都市活力取 <code>roleHome</code> 接口的当前值与上限（一律以接口为准，不写死 240）；活跃度取 <code>dayvalue</code>，分母 100 是官方 H5 前端常量，界面会标「分母常量」。上限缺失时才用官方兜底值推算，并标「推算」。</p>
+      <p><b>第四项「周本次数」口径：</b>取 <code>weekcopiesremainCnt</code>（<b>本周剩余次数</b>，<code>0</code> 表示本周已打完），分母 <code>3</code> 是官方 H5 前端常量。该字段是<b>存档字段</b>：本周进过游戏、存档写入并退出后才会出现在角色数据里（实测同一角色退出前后 22 键 / 23 键）。有字段时显示真实 <code>x/3</code> 并标「接口真值」；没有字段时显示「—」并标「未同步」，<b>绝不把官方自己的 <code>3/3</code> 兜底常量当成实时数据</b>。本项只作展示，不计入任何提醒；可在设置里关闭显示。鼠标悬停在标签上可看口径说明。</p>
+      <p><b>抽卡统计口径：</b>官方 <code>gacha</code> 返回的是「聚合统计 + 稀有出货明细」，不是逐抽流水。卡池层 <code>drawCount</code> 是该池累计抽数；明细层 <code>rareCount</code>（与卡池层同名字段语义完全不同）是<b>本次出货距上次出货所用抽数</b>，也就是拿到这个角色花了多少抽。看板按物品汇总「合计花费抽数 / 平均 / 最非一次」，并在逐次明细里给出按时间前缀和计算的「累计抽数」与距保底进度。出货时间只取 <code>timeStamp</code>，因为 <code>time</code> 字段实测恒为抓取当天。若明细抽数之和小于卡池累计抽数（官方记录疑有滚动保留期），界面会明确标注累计只覆盖现存明细，不会把残缺数据当成开服至今总账。<code>luckyType</code> 原样展示，含义未定案。</p>
+      <p><b>抽卡物品名称：</b><code>charid</code> 只有 ID。中文名来自官方 <code>characters</code> 字典接口（角色数字 ID、<code>fork_</code> 弧盘），日常 <code>roleHome</code> 刷新也会顺手维护，全程不猜名称。字典未覆盖的物品只显示 ID 并标「未下发名称」，点击名称可设置本地别名（只影响显示，优先级高于官方名称，留空即恢复）。</p>
+      <p><b>账号显示自定义：</b>点账号卡片标题旁的 ✎ 打开「自定义显示」：标题可切换为原显示（备注）/ 角色名 / 手机号掩码 / 自定义文字，副标题可整段替换或按字段勾选显示（手机号掩码、角色名、凭证类型）。设置只存在本机浏览器 <code>localStorage</code>，<b>不写入 SQLite、不改官方账号、不影响签到 / 刷新 / 抽卡数据</b>；「还原此账号」或「全部还原」立即恢复服务端原始字段。换浏览器或清理浏览器数据后会回到原显示。</p>
+      <p><b>账号卡片上的「抽卡统计」：</b>只把下方抽卡区块筛选成该账号的<b>本地已保存快照</b>并滚动过去，不会入队、不会刷新、不会请求官方 <code>gacha</code>；区块顶部会标出数据抓取时间和「仅查看本地快照」。想更新数据请显式点「抓取全部账号」或该账号区块里的「抓取此账号」。点「显示全部账号」退出单账号筛选。</p>
+      <p><b>备注：</b>点「备注」会弹出输入框，把填写的文字经 <code>/api/account/update</code> 写进本地 SQLite 的 <code>accounts.remark</code> 字段（最长 30 字）。它只是本地标签，<b>作为账号卡片与抽卡区块的默认标题</b>，不会同步到官方、不会改角色名 / 手机号 / 凭证，也不影响签到与数据刷新；留空保存会清掉标签，标题回落到「未命名账号」。它是写数据库的操作，与上面只存浏览器的「自定义显示」互不影响。</p>
+      <p><b>签到详情 / 补签 / 呗果：</b>账号卡片上的「签到详情」做一次<b>只读</b>查询（<code>signin/state</code>、<code>resign_info</code>、<code>sign/rewards</code>、<code>sign/reward_records</code>），把<b>呗果余额</b>、<code>补签消耗 / 剩余次数</code>、<b>本月累计签到奖励表（30 天）</b>和最近到账流水缓存到本地 <code>signin_info</code> 表；看板随 <code>/api/state</code> 一起下发，不需要每次额外请求。奖励表里<b>环石（高级货币）会加粗高亮</b>，已签的格子打勾、今天的格子描边。点「补签」会真正提交官方 <code>POST /apihub/awapi/resign</code>（form <code>roleId</code> + <code>gameId</code>），因此同样受「允许写操作」开关保护，提交前会二次确认并显示消耗与剩余次数。<b>官方前置条件</b>：必须当日已签到；每次消耗 200 呗果；每账号每月 3 次、每月 1 日 00:00 重置；补签自动补「当日签到后下一日」的奖励。呗果不足、次数用完、今日未签都会在前端按钮置灰并在后端再校验一次，不会白提交请求。补签奖励与签到一样<b>经游戏内邮箱发放</b>。</p>
+      <p><b>签到模式（2026-11-08 更正）：</b>默认执行<b>异环游戏内每日签到</b>（<code>gameId=1289</code>）：先只读 <code>signin/state</code> 判断今日是否已签，未签才 <code>POST /apihub/awapi/sign</code>（form: <code>roleId</code> + <code>gameId</code>），随后用 <code>sign/reward_records</code> 核对实际到账奖励，显示为账号卡片上的「今日已签 · +道具×数量」。<b>社区版区签到</b>（<code>/apihub/api/signin</code>）只发社区经验/金币，不是游戏奖励，仅保留为可选模式；<code>communityId</code> 已从 <code>1</code>（幻塔）更正为 <code>2</code>（异环）。</p>
+      <p><b>为什么奖励会「签了但邮箱没有」（2026-11-08 定案）：</b>纯签到只把记录写在社区侧，<b>不会</b>把道具推进游戏邮箱。真正让奖励投进邮箱的是 <code>POST /usercenter/api/autoBindGameRole</code>（form: <code>gameId</code> + <code>roleId</code>）——这正是<b>塔吉多 App 登录后自动执行的一步</b>，所以才有「登录一次塔吉多邮箱才有东西」的现象。本工具现在会在<b>签到成功后</b>、以及<b>今日已签</b>两个分支都自动调一次该接口；已签但邮箱仍为空时，签到详情弹窗里点「<b>补投递</b>」手动触发。注意它不改签到状态、不消耗呗果、不重复发奖；触发后仍需<b>完全退出游戏再重进</b>，邮箱列表才会刷新。</p>
+      <p><b>签到幂等：</b>以「账号 + 日期 + gameId=1289」为唯一键，当日已成功直接跳过、根本不发请求；再叠加服务端 <code>signin/state.todaySign=true</code> 与「已签到 / 签到过 / 重复签到」文案判据。旧社区记录（<code>community_id=1</code>，其实是幻塔）不参与游戏签到判据，不会被误显示成「今日已签」。</p>
+      <p><b>凭证安全：</b>accessToken 用 Windows 系统 DPAPI 加密（密文绑定当前 Windows 用户），SQLite 只存引用与版本戳；验证码只在内存，手机号只存掩码；日志自动脱敏。V2 协议不签发 refreshToken，过期需重新收一次短信，不会静默重试。</p>
+      <p><b>范围：</b>异环游戏内每日签到（含手动补签）、四项实时信息与抽卡统计；社区版区签到仅作可选兼容。<b>不含</b>幻塔任何功能、任务中心、兑换中心、角色卡片等。补签必须手动点、手动确认，<b>自动化不会触发任何补签</b>。抽卡抓取与签到详情都是只读 GET，与刷新/签到共用同一条串行限速队列，不因账号多而并发打满请求。</p>
+      <p><b>风险提示：</b>第三方客户端存在协议变更与账号风险。若接口报「疑似协议改版」，请在 <code>adapters/1.2.8.json</code> 更新端点/签名常量后重启；如不再使用，删除 <code>data/</code> 目录即可彻底清除本地凭证。</p>
+    </div>
+  </details>
+
+  <footer>数据目录 <span id="dataDir"></span> · 仅监听 127.0.0.1 · 所有票据不入库明文</footer>
+</div>
+
+<div class="modal" id="displayModal" hidden>
+  <div class="modal-card">
+    <div class="modal-head"><h2>自定义显示</h2><button class="x" data-close="displayModal">×</button></div>
+    <p class="muted">只改本机浏览器里的显示文字，不写数据库、不改动官方账号，也不影响签到 / 刷新 / 抽卡数据。「还原」立即恢复服务端原始字段。</p>
+    <p class="display-original" id="displayOriginal"></p>
+    <label>标题显示</label>
+    <select id="displayTitleMode">
+      <option value="original">原显示（账号备注）</option>
+      <option value="role">角色名</option>
+      <option value="phone">手机号掩码</option>
+      <option value="custom">自定义文字</option>
+    </select>
+    <label>自定义标题文字（选「自定义文字」时生效）</label>
+    <input type="text" id="displayTitleText" maxlength="30" placeholder="例如：主号 / 小号">
+    <label>副标题（留空则按下方勾选自动拼接；填了就整段替换）</label>
+    <input type="text" id="displaySubText" maxlength="60" placeholder="留空 = 原始字段拼接">
+    <div class="display-checks">
+      <label class="check"><input type="checkbox" id="displayShowPhone"> 显示手机号掩码</label>
+      <label class="check"><input type="checkbox" id="displayShowRole"> 显示角色名</label>
+      <label class="check"><input type="checkbox" id="displayShowCredential"> 显示凭证类型</label>
+    </div>
+    <div class="modal-msg" id="displayMsg"></div>
+    <div class="modal-foot">
+      <button class="btn danger" id="btnDisplayRestore">还原此账号</button>
+      <div class="display-foot-right">
+        <button class="btn ghost" id="btnDisplayRestoreAll">全部还原</button>
+        <button class="btn primary" id="btnDisplaySave">保存</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="signModal" hidden>
+  <div class="modal-card wide">
+    <div class="modal-head"><h2 id="signTitle">签到详情</h2><button class="x" data-close="signModal">×</button></div>
+    <div id="signBody"></div>
+    <div class="modal-foot">
+      <span class="modal-msg" id="signMsg"></span>
+      <div class="display-foot-right">
+        <button class="btn ghost" id="btnSignInfoReload">重新读取（只读）</button>
+        <button class="btn ghost" id="btnDeliver" title="已签到但游戏邮箱没收到奖励时点它：触发一次角色联动，让待发放奖励投进邮箱。不改任何签到数据。">补投递</button>
+        <button class="btn primary" id="btnResign">补签</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="authModal" hidden>
+  <div class="modal-card">
+    <div class="modal-head"><h2>手机号 + 短信验证码授权</h2><button class="x" data-close="authModal">×</button></div>
+    <p class="muted">验证码只在内存中，不落盘、不进日志。同一号码 60 秒内不会重复发短信；弹窗被关掉也不用重发，重新打开会直接接到刚才那一步。</p>
+    <div id="authStep1">
+      <label>手机号</label>
+      <input id="authPhone" type="tel" maxlength="11" placeholder="11 位手机号" autocomplete="off">
+      <button class="btn primary" id="btnSendCode">发送验证码</button>
+    </div>
+    <div id="authStep2" hidden>
+      <p>验证码已发送至 <b id="authMask"></b></p>
+      <label>短信验证码</label>
+      <input id="authCode" type="text" maxlength="8" placeholder="收到的验证码" autocomplete="off">
+      <label class="check"><input type="checkbox" id="authSkipCheck"> 跳过预校验（仅在上一步失败时使用）</label>
+      <label>备注名（可选）</label>
+      <input id="authRemark" type="text" maxlength="30" placeholder="例如：主号">
+      <button class="btn primary" id="btnVerify">完成授权</button>
+      <button class="btn" id="btnResendCode">重新发送验证码</button>
+      <p class="muted" id="authExpire"></p>
+    </div>
+    <div class="modal-msg" id="authMsg"></div>
+  </div>
+</div>
+
+<div class="modal" id="settingsModal" hidden>
+  <div class="modal-card wide">
+    <div class="modal-head"><h2>设置</h2><button class="x" data-close="settingsModal">×</button></div>
+    <div class="setting-row danger-row">
+      <div><b>允许写操作（游戏签到 / 补签）</b><p>默认关闭。开启后，点「一键签到」、账号卡片上的「签到」「补签」才会真正提交<b>异环游戏内签到 / 补签</b>请求；当日已成功 / 服务端 <code>todaySign=true</code> 的账号由本地唯一键与服务端状态双重幂等跳过。补签还会再校验「当日已签 / 呗果够 / 次数未用完」。执行结果看「任务队列」与账号卡片上的「今日已签 · +奖励」。</p></div>
+      <label class="switch"><input type="checkbox" id="setWrite"><span></span></label>
+    </div>
+    <div class="setting-row">
+      <div><b>自动化总开关</b><p>定时只读刷新与按时自动签到。关闭后队列保留但不再自动执行。</p></div>
+      <label class="switch"><input type="checkbox" id="setAuto"><span></span></label>
+    </div>
+    <div class="setting-row">
+      <div><b>显示周本次数</b><p>第四项卡片。官方下发真实剩余次数时显示 <code>x/3</code>，未下发时显示「—」，不会伪造官方 H5 的 3/3 兜底值；本项不计入提醒。关闭后看板回到三项。</p></div>
+      <label class="switch"><input type="checkbox" id="setWeekly"><span></span></label>
+    </div>
+    <div class="setting-grid">
+      <label>刷新间隔（分钟）<input type="number" id="setRefresh" min="5" max="240"></label>
+      <label>每轮批量上限<input type="number" id="setBatch" min="1" max="100"></label>
+      <label>账号间隔下限（秒）<input type="number" id="setMin" min="1" max="120"></label>
+      <label>账号间隔上限（秒）<input type="number" id="setMax" min="1" max="120"></label>
+      <label>签到窗口起<input type="time" id="setStart"></label>
+      <label>签到窗口止<input type="time" id="setEnd"></label>
+    </div>
+    <div class="setting-row">
+      <div><b>协议适配器</b><p id="adapterInfo"></p></div>
+      <button class="btn danger" id="btnStopAutomation">一键停用自动化</button>
+    </div>
+    <div class="modal-foot">
+      <span class="modal-msg" id="setMsg"></span>
+      <button class="btn primary" id="btnSaveSettings">保存设置</button>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

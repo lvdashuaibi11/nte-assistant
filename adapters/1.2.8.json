@@ -1,0 +1,245 @@
+{
+  "adapterVersion": "1.2.8",
+  "description": "塔吉多 App 1.2.8 / 异环 gameId=1289。端点、签名常量、字段映射全部热加载，官方改版只改本文件。",
+  "bbs": "https://bbs-api.tajiduo.com",
+  "laohu": "https://user.laohu.com",
+  "gameId": "1289",
+  "appVersion": "1.2.8",
+  "legacyAppVersion": "1.2.5",
+  "appIdLaohu": "10550",
+  "appIdUserCenter": "10551",
+  "secret": "89155cc4e8634ec5b1b6364013b23e3e",
+  "cloudSecret": "f1b7f11fc3774f898e387368cce4da04",
+  "dsSecret": "pUds3dfMkl",
+  "userAgent": "okhttp/4.12.0",
+  "deviceModel": "LGE-AN10",
+  "sdkVersion": "4.129.0",
+  "deviceSys": "12",
+  "bid": "com.pwrd.htassistant",
+  "channelId": "1",
+  "areaCodeId": "1",
+  "communityId": "2",
+  "signinMode": "game",
+  "authProtocol": "v2",
+  "credentialMode": "accessToken",
+  "endpoints": {
+    "sendCaptcha": "/m/newApi/sendPhoneCaptchaWithOutLogin",
+    "checkCaptcha": "/m/newApi/checkPhoneCaptchaWithOutLogin",
+    "smsLogin": "/openApi/sms/new/login",
+    "ucLoginV2": "/usercenter/api/loginV2",
+    "ucLoginV1": "/usercenter/api/login",
+    "refreshV2": "/usercenter/api/refreshTokenV2",
+    "refreshV1": "/usercenter/api/refreshToken",
+    "getGameRoles": "/usercenter/api/v2/getGameRoles",
+    "getGameRolesOld": "/usercenter/api/getGameRoles",
+    "roleHome": "/apihub/awapi/yh/roleHome",
+    "characters": "/apihub/awapi/yh/characters",
+    "gacha": "/apihub/awapi/yh/gacha",
+    "getSignState": "/apihub/api/getSignState",
+    "signin": "/apihub/api/signin",
+    "signState": "/apihub/awapi/signin/state",
+    "signRewards": "/apihub/awapi/sign/rewards",
+    "signRewardRecords": "/apihub/awapi/sign/reward_records",
+    "signGame": "/apihub/awapi/sign",
+    "resignInfo": "/apihub/awapi/resign_info",
+    "resign": "/apihub/awapi/resign",
+    "autoBindRole": "/usercenter/api/autoBindGameRole"
+  },
+  "signinNotes": {
+    "mode": "game",
+    "discoveredAt": "2026-11-08",
+    "why": "用户反馈「一键签到奖励没有下发」。实测 communityId=1 的社区 home 返回 name=幻塔（gameId 1256），communityId=2 才是异环（gameId 1289）；社区签到 POST /apihub/api/signin 只发社区经验/金币，游戏奖励必须走游戏内每日签到 POST /apihub/awapi/sign。",
+    "community": {
+      "幻塔": 1,
+      "异环": 2
+    },
+    "gameSignFlow": [
+      "GET /apihub/awapi/signin/state?gameId=1289 -> {day, days, month, reSignCnt, todaySign}",
+      "GET /apihub/awapi/sign/rewards?gameId=1289&roleId=... -> [{icon,name,num}, ...]",
+      "POST /apihub/awapi/sign (form: roleId, gameId=1289)",
+      "GET /apihub/awapi/sign/reward_records?gameId=1289 -> 最近发放记录 [{createTime,icon,name,num}]"
+    ],
+    "rewardSemantics": "rewards 是 30 天奖励表；state.days 为已累计天数，H5 用 signed = index < days、canSign = index === days && !todaySign，即今日奖励 = rewards[days]（0 基）。签到成功后 reward_records 会新增一条，优先用最新记录核对实际到账。",
+    "rewardDelivery": "2026-11-08 从官方 H5（webstatic.tajiduo.com/bbs/yh-signin -> static/js/main.*.js）确认文案：「（签到奖励可能存在延迟，请前往游戏内邮箱领取奖励邮件）」。即奖励不进背包，走游戏内邮箱，且可能延迟；reward_records 的「发放状态」固定渲染为「已发放」，表示系统已发出，不代表玩家已领取。用户报「签到没奖励」时先让其查游戏邮箱/等延迟，不要重复签到。2026-11-08 追加实测：社区侧签到相关接口只有 getGameBindRole / signin/state / sign/rewards / sign / sign/reward_records / resign_info / resign，没有「投递/领取/补发到邮箱」的写接口；reward_records 每条只有 createTime/icon/name/num，createTime = 提交签到的时刻而非进邮箱的时刻，也没有发放状态字段（H5 那列「已发放」是写死文案）。【关键根因·已被用户对照实验证实】用户用两个账号做了对照：用塔吉多 App 登录过的号（记为账号A）邮箱能收到签到奖励，没登录过的号（记为账号B）邮箱始终为空；补调一次 POST /usercenter/api/autoBindGameRole（form: gameId=1289 + roleId，无其他参数）后，奖励立刻出现在游戏邮箱。故「必须登录一次塔吉多」是真的因果关系：App 登录后会自动执行 autoBindGameRole 这一步，在游戏服侧建立角色联动并触发待发放投递，而纯签到（sign）只写社区侧记录。注意 autoBindGameRole 返回 code=0 但不会改写 getGameBindRoles 里的 account/updateTime（账号B 实测仍为空、时间戳不变），所以不能读绑定表判断是否已投递；bindGameRoleV2 对已绑定角色返回 151「该角色已绑定」，无法用它补 account。v1.1 起签到流程在 sign 成功后、以及 todaySign=true 分支都会自动调一次 autoBindGameRole，并提供「补投递」手动入口。此前的「塔吉多是巧合」判断为错误结论，已作废。",
+    "resign": "GET /apihub/awapi/resign_info?gameId=1289 -> {coin,cost,resignCnt,resignLimit,todaySign}，coin 是「呗果」积点余额、cost 实测 200；POST /apihub/awapi/resign (form: roleId, gameId) 消耗呗果补签，前置条件是当日已签到，补的是「当日签到后下一日」的奖励且同样走游戏内邮箱。v1.0 起支持手动补签（卡片/详情弹窗二次确认），自动化永远不触发补签。",
+    "legacyCommunitySignin": "旧 POST /apihub/api/signin?communityId 保留为可选，但不再是默认签到路径；communityId 已从 1（幻塔）更正为 2（异环）。",
+    "autoBind": "2026-11-08 新增：autoBindRole = POST /usercenter/api/autoBindGameRole，作用是把社区侧登记的待发放签到奖励投进游戏邮箱（游戏服侧角色联动），不改签到数据、不消耗呗果、不重复发奖。签到成功后、todaySign=true 分支、以及补签（resign）成功后都会自动调用一次；已签/补签但邮箱没到账时，用「补投递」手动触发。投递后仍需玩家完全退出游戏再重进，邮箱列表才会刷新（邮件不实时推送）。v1.1.3（2026-11-09）：签到/补签成功后再排一次延迟 30 秒的自动补投递（走 _do_deliver，与手动按钮同路径），因为同秒投递可能早于游戏服「待发放」记录落成，会出现「每次都得手动补投递才到帐」；_ensure_delivery 遇错原地重试 3 次并记录 autoBind 返回的 code/data。",
+    "resignDelivery": "2026-11-08：补签（POST /apihub/awapi/resign）与签到同一个坑——它同样只写社区侧记录，不会把「当日之后下一天」的奖励推进游戏邮箱，因此补签成功后必须再调一次 autoBindGameRole。v1.1.1 起 _do_resign 在成功分支自动补调，任务消息会写明「已触发投递」。补签消耗呗果的一次性成本不可逆，但投递本身幂等、可重复触发。"
+  },
+  "metrics": [
+    {
+      "key": "stamina",
+      "label": "本性像素",
+      "valueField": "staminaValue",
+      "maxField": "staminaMaxValue",
+      "maxSource": "api",
+      "fallbackMax": 240,
+      "fallbackSource": "frontend_default",
+      "fallbackNote": "240 只是 H5 前端缺省，不是真实上限；接口有值时一律以接口为准"
+    },
+    {
+      "key": "cityStamina",
+      "label": "都市活力",
+      "valueField": "citystaminaValue",
+      "maxField": "citystaminaMaxValue",
+      "maxSource": "api",
+      "fallbackByLevel": {
+        "field": "tycoonLevel",
+        "thresholds": [
+          {
+            "min": 23,
+            "max": 700
+          },
+          {
+            "min": 16,
+            "max": 500
+          },
+          {
+            "min": 10,
+            "max": 350
+          },
+          {
+            "min": 5,
+            "max": 200
+          }
+        ],
+        "default": 100
+      },
+      "fallbackSource": "estimated",
+      "fallbackNote": "仅在接口缺 citystaminaMaxValue 时按大亨等级推算，UI 必须标「推算」",
+      "weeklyReset": {
+        "weekday": 0,
+        "hour": 5,
+        "note": "周刷新资源：周一 05:00 归满。规则就是「归满」本身——看板里比本周重置点更旧的快照，一律按上限展示（展示层改写、不落库），不等服务端、不等刷新。服务端不在刷新点重算，要等玩家在游戏里花掉第一点才返回真实值：没花完的号会原样回显上周残留值（如 256），花光过的号返回 0，这两种假数在刷新层被拦住——仅当本周还没读到过真实非 0 值、且值为 0 或命中「重置点前 2 天内的真实读数（= 跨点后一动没动）」时，才按上限显示并标「周重置·按满显示」。一旦本周读到过真值（包括花掉后变化的值），一律以接口为准，覆盖估算。"
+      }
+    },
+    {
+      "key": "activity",
+      "label": "活跃度",
+      "valueField": "dayvalue",
+      "max": 100,
+      "maxSource": "frontend_constant",
+      "fallbackValue": 0,
+      "fallbackSource": "frontend_default",
+      "fallbackNote": "分母 100 是 H5 前端硬编码常量，接口不返回"
+    }
+  ],
+  "optionalMetrics": [
+    {
+      "key": "weeklyCopies",
+      "label": "周本次数",
+      "field": "weekcopiesremainCnt",
+      "denominator": 3,
+      "denominatorSource": "frontend_constant",
+      "denominatorNote": "分母 3 是官方 H5 前端硬编码常量（const ue = ''.concat(w, '/3')），接口不下发上限，界面标「分母常量」。",
+      "semantics": "weekcopiesremainCnt = 本周剩余次数；0 表示本周已打完（账号 2 实测已打完）。不是「已用次数」，不是未解锁。",
+      "missingValue": null,
+      "missingLabel": "—",
+      "missingBadge": "未同步",
+      "missingHint": "这个数来自游戏存档：本周进入游戏、存档写入并退出之后，服务端才会把它带进角色数据。刚打完还在游戏里、或本周还没进过游戏时，接口里整键不存在（不是 0 次，是没这个键）。工具拿不到就显示「—」，绝不套用官方前端的常量 3。退出游戏后点刷新（或等自动刷新）就会出现。",
+      "missingObserved": "2026-11-09 三次观测，结论见 last。① 上午：账号 2 从 11-07 04:32 到 11-09 00:03 四次刷新 weekcopiesremainCnt=0，05:00 周重置后整键消失，当天刷 1 次后 10:57 仍 22 键 → 曾误判「官方只在已打完时下发」，作废。② 11:31 官方 App 截图同一角色显示 2/3，证明会下发非 0 值。③ 11:51 账号 2 退出游戏并重新授权后，roleHome 返回 23 键、weekcopiesremainCnt=2，与 App 一致；同期账号 1（本周未进游戏）仍 22 键、无该键。⇒ 该字段由游戏存档同步产生，不是请求参数或 token 差异。",
+      "source": "api",
+      "enabled": true,
+      "decision": "enabled",
+      "reason": "2026-11-07 04:26 用户要求把周本次数加回看板，取代此前方案 B（隐藏）。规则：官方下发 weekcopiesremainCnt 时显示真实 x/3 并标「接口真值 + 分母常量」；未下发时显示「—」并标「官方未下发」，绝不把 H5 的 3/3 兜底常量伪装成实时数据。字段按角色条件性下发（账号 2 实测 0，账号 1 不下发）；账号 1 是购买的号、官方 App 数据本身不正确，不能当基准真值。04:23 用户确认看板与 App 一致即为正确镜像，S2 数据链路验收通过。",
+      "valueSemanticsNote": "2026-11-07 04:19 用户更正（以此为准）：账号 1 才是购买的号；账号 2 是用户自己的号且本周周本已打完。故 weekcopiesremainCnt=0 定案为「本周剩余 0 次（已打完）」，与字段名 remainCnt 一致；不是未解锁、不是前端常量。",
+      "history": [
+        "S0 单账号探测误判「官方无真实数据源」→ 已作废",
+        "04:05 双账号复核发现条件性下发 → 纠正",
+        "方案 B（隐藏）→ 04:26 用户改为启用"
+      ]
+    }
+  ],
+  "roleHomeExpectedKeys": [
+    "achieveProgress",
+    "areaProgress",
+    "avatar",
+    "characters",
+    "charidCnt",
+    "citystaminaMaxValue",
+    "citystaminaValue",
+    "dayvalue",
+    "gender",
+    "lev",
+    "realestate",
+    "roleid",
+    "roleloginDays",
+    "rolename",
+    "serverid",
+    "servername",
+    "staminaMaxValue",
+    "staminaValue",
+    "tycoonLevel",
+    "userid",
+    "vehicle",
+    "worldlevel"
+  ],
+  "roleHomeOptionalKeys": [
+    "weekcopiesremainCnt"
+  ],
+  "roleHomeOptionalKeysNote": "按角色条件性下发的已知字段。H5 前端逻辑 c == null ? '3' : c，字段缺失才兜底成常量 3/3；这类字段不参与「疑似协议改版」判定，避免误报。新增其它条件性字段时在这里登记。",
+  "gachaNotes": {
+    "discoveredAt": "2026-11-07",
+    "status": "integrated_dashboard_v0.8",
+    "auth": "与 roleHome 同一 accessToken 与 ds 签名头",
+    "params": [
+      "roleId"
+    ],
+    "topLevelFields": [
+      "rolename",
+      "roleid",
+      "userid",
+      "lev",
+      "avatar",
+      "luckTitle",
+      "luckType",
+      "gachaDetails"
+    ],
+    "poolFields": [
+      "tab",
+      "drawCount",
+      "rareCount",
+      "average",
+      "m",
+      "playerOver",
+      "details"
+    ],
+    "detailFields": [
+      "charid",
+      "rareCount",
+      "luckyType",
+      "time",
+      "timeStamp"
+    ],
+    "detailDrawSemantics": "明细 rareCount = 本次出货距上次出货所用抽数（获取该物品花的抽数），与卡池层 rareCount（出货次数）同名不同义。2026-11-07 双账号 6 池实测：sum(details.rareCount) 恒等于该池 drawCount。",
+    "itemNamesEndpoint": "/apihub/awapi/yh/characters",
+    "itemNamesNote": "gacha 的 charid 只有 ID；中文名来自官方 characters 字典（角色 id→name、装备弧盘 fork_xxx→name，递归提取）。roleHome.characters 也带同一批名称，日常刷新零额外请求维护。2026-11-07 实测两账号合并可覆盖抽卡明细 15/15 个角色 ID 与 9/11 个弧盘 ID；未覆盖的只显示 ID 并允许用户本地自定义别名，绝不猜测名称。",
+    "caveats": "明细 time 字段实测恒为抓取当天，必须用 timeStamp 还原出货时间；接口给的是聚合统计 + 稀有一次出货明细，不是逐抽流水；官方记录疑有约 180 天滚动期（外部资料，未实测），若明细之和小于 drawCount，累计抽数只覆盖现存明细并在 UI 标注。",
+    "report": "nte-capture/抽卡统计_抓取报告.md",
+    "integration": "已常驻看板：只读 gacha 任务走同一串行限速队列；gacha_snapshot 存完整规范化快照（含历史），item_names 存官方名称与用户别名；按卡池展示每个角色获取花费抽数与逐次出货累计抽数。"
+  },
+  "alreadySignedKeywords": [
+    "已签到",
+    "签到过",
+    "重复签到"
+  ],
+  "protocolChangedKeywords": [
+    "invalid request",
+    "签名错误",
+    "签名校验",
+    "版本过低",
+    "请升级"
+  ],
+  "authExpiredStatus": [
+    401,
+    402
+  ],
+  "limits": {
+    "minIntervalSec": 5,
+    "maxIntervalSec": 10,
+    "refreshIntervalMin": 20,
+    "batchSize": 5,
+    "timeoutSec": 15,
+    "maxAttempts": 2
+  }
+}

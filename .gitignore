@@ -1,0 +1,30 @@
+# 运行期数据：账号、凭证、日志、快照，一律不进仓库
+data/
+*.db
+*.db-journal
+*.db-wal
+vault.json
+run.log
+nohup.out
+python_path.txt
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# 本机运行时与发行产物
+runtime/
+*.zip
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+*.lnk
+
+# 本地一次性调试脚本，不入库
+probe_week_after_auth.py
