@@ -42,7 +42,7 @@ Windows 用户也可以双击 `启动.bat`（前台）或 `后台启动.bat`（�
 
 ### 方式二：免安装版
 
-从 [Releases](https://github.com/lvdashuaibi11/nte-assistant/releases) 下载 `异环助手_v*_免安装版.zip`，解压后双击 `启动.bat`。包内自带 Python 3.12 embed 运行时（`runtime/`），什么都不用装。
+从 [Releases](https://github.com/lvdashuaibi11/nte-assistant/releases) 下载 `NTE-Assistant_v*_portable_win64.zip`，解压后双击 `启动.bat`。包内自带 Python 3.12 embed 运行时（`runtime/`），什么都不用装。自己打包的话，把源码目录连同 `runtime/` 一起压缩即可，结构与 [目录结构](#目录结构) 一致。
 
 > 路径别带中文和空格更稳，例如 `D:\nte-assistant`。
 > 必须用 `127.0.0.1`，不要用 `localhost` 或局域网 IP —— 服务只绑回环地址。
