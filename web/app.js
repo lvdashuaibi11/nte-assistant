@@ -196,6 +196,11 @@ function renderAccounts(d) {
       ? '<span class="mail-hint" title="官方说明：签到奖励可能存在延迟，请前往游戏内邮箱领取奖励邮件。不进背包是正常的，去邮箱领附件。若邮箱里没有，打开「签到详情」点「补投递」触发一次投递，再完全退出游戏重进查看（邮件不会实时推送）。">走游戏邮箱</span>'
       : '';
     const stateText = {ok:'正常', reauth:'待重登', error:'异常', disabled:'停用'}[a.status] || a.status;
+    // 有没有 refreshToken，决定「48 小时后是否还要你收一次短信」
+    const ageH = Math.floor((a.credential_age_sec || 0) / 3600);
+    const renewBadge = a.renewable
+      ? `<span class="renew" title="已持长期凭证：满 42 小时会自动换新，不用再收短信。当前凭证已用 ${ageH} 小时">自动续期</span>`
+      : `<span class="renew off" title="当前是短信登录一次性凭证，约 48 小时后失效。重新授权一次就会自动走 V1 协议拿到 refreshToken，之后到期自动续期">到期需重登</span>`;
     const last = a.last_refresh_at ? hhmm(a.last_refresh_at) : '未刷新';
     const customFlag = isDisplayCustomized(a.id) ? '<span class="display-flag">自定义</span>' : '';
     const info = a.signin_info || null;
@@ -214,7 +219,7 @@ function renderAccounts(d) {
         <div><div class="card-title">${esc(displayTitle(a))}${customFlag}
             <button class="title-edit" data-act="display" title="自定义显示 / 还原原显示">✎</button></div>
           <div class="card-sub">${esc(displaySub(a))}</div></div>
-        <span class="state ${esc(a.status)}">${esc(stateText)}</span>
+        <span class="state ${esc(a.status)}">${esc(stateText)}</span>${renewBadge}
       </div>
       <div class="metrics">${d.metrics.map(m => metricHtml(m, a.snapshot, d.weekly)).join('')}</div>
       <div class="card-foot">

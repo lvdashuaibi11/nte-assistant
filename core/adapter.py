@@ -242,6 +242,41 @@ class Adapter:
             "protocol": protocol,
         }
 
+    # ------------------------------------------------------------ 凭证续期
+    def refresh_access_token(self, refresh_token: str, uid: str,
+                             device_id: str) -> dict:
+        """用 refreshToken 换新的 accessToken + refreshToken（轮换制）。
+
+        走 V1 端点并配 legacyAppVersion（1.2.5）：这是实测唯一接受旧协议签发的
+        refreshToken 的组合。返回的新 refreshToken 必须立刻落库，旧值随即作废。
+        """
+        ver = self.cfg.get("legacyAppVersion") or self.cfg["appVersion"]
+        headers = {
+            "Accept": "application/json, text/plain, */*",
+            "deviceId": device_id,
+            "Authorization": refresh_token,
+            "appVersion": ver,
+            "uid": str(uid or "0"),
+            "debug-uid": "3",
+            "ds": self.make_ds(ver),
+        }
+        status, payload, raw = self.request_json("POST", self.url("refreshV1"),
+                                                headers=headers)
+        if status in self.cfg.get("authExpiredStatus", [401, 402]):
+            raise AdapterError("refresh_expired",
+                               "refreshToken 已失效，需要重新短信登录", status=status)
+        err = self.classify(status, payload, raw)
+        if err:
+            raise err
+        data = (payload or {}).get("data") or {}
+        if not data.get("accessToken") or not data.get("refreshToken"):
+            raise AdapterError("protocol_changed", "刷新凭证未返回 accessToken/refreshToken")
+        return {
+            "accessToken": data["accessToken"],
+            "refreshToken": data["refreshToken"],
+            "uid": str(data.get("uid") or uid or ""),
+        }
+
     # ------------------------------------------------------------ 只读业务
     def get_game_roles(self, access_token: str, uid: str, device_id: str) -> list[dict]:
         status, payload, raw = self.request_json(

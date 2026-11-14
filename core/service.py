@@ -28,6 +28,11 @@ class WriteDisabled(RuntimeError):
     """写操作总开关关闭时拒绝签到。"""
 
 
+# 凭证 48 小时后失效；提前到 42 小时主动换一次，留出 6 小时容错窗口
+# （工具不是常驻轮询，用户可能隔一天才打开一次）。
+RENEW_AFTER_SEC = 42 * 3600
+
+
 @dataclass
 class Job:
     kind: str                  # refresh | signin | gacha（抽卡只读，但仍走同一串行队列限速）
@@ -353,11 +358,39 @@ class Service:
 
     def _credential(self, account: dict) -> dict:
         try:
-            return self.auth.credential(account)
+            cred = self.auth.credential(account)
         except AuthError as exc:
             self.store.update_account(account["id"], status="reauth", last_error=str(exc))
             self.store.add_audit(account["id"], "credential_missing", "reauth")
             raise
+        return self._renew_if_stale(account, cred)
+
+    def _renew_if_stale(self, account: dict, cred: dict) -> dict:
+        """凭证快到 48 小时上限时，用 refreshToken 静默换一张新的。
+
+        没有 refreshToken（V2 登录签发）的账号直接跳过，行为与旧版一致。
+        """
+        if not (cred.get("refreshToken") or "").strip():
+            return cred
+        age = time.time() - float(cred.get("obtainedAt") or 0)
+        if age < RENEW_AFTER_SEC:
+            return cred
+        try:
+            return self.auth.renew(account)
+        except AdapterError as exc:
+            if exc.kind == "refresh_expired":
+                self.store.update_account(
+                    account["id"], status="reauth",
+                    last_error="长期凭证也已失效，需要重新短信登录")
+                self.store.add_audit(account["id"], "refresh_expired", "reauth")
+                raise AuthError("长期凭证失效，需重新短信登录") from exc
+            self.log.warn("auth.renew",
+                          f"账号 {account['id']} 自动续期失败（{exc.kind}），沿用旧凭证")
+            return cred
+        except AuthError as exc:
+            self.log.warn("auth.renew",
+                          f"账号 {account['id']} 自动续期失败（{exc}），沿用旧凭证")
+            return cred
 
     def _week_view(self, snap: dict, reset: float) -> None:
         """看板展示层：快照比本周重置点还旧，周刷新资源一律按上限显示（v1.1.6）。
@@ -1037,6 +1070,9 @@ class Service:
             entry = infos.get(a["id"])
             a["signin_info"] = (entry or {}).get("data") or None
             a["signin_info_at"] = (entry or {}).get("ts") or 0
+            # 有没有 refreshToken 决定「会不会再逼你登一次」：有就能自动续期
+            a["renewable"] = self.auth.can_renew(a)
+            a["credential_age_sec"] = max(0, int(time.time() - (a.get("obtained_at") or 0)))
             if a.get("snapshot"):
                 # 快照若是本周重置点之前抓的，周刷新资源直接按满展示（不落库）
                 self._week_view(a["snapshot"], reset)

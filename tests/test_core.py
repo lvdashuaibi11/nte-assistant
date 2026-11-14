@@ -1313,5 +1313,113 @@ class TestAuthSessionResume(BaseCase):
         self.assertIn("重新发送", str(ctx.exception))
 
 
+class TestCredentialRenew(BaseCase):
+    """refreshToken 自动续期：把「48 小时就要重新登录」变成「一直不用管」。
+
+    V2 登录只发 accessToken，所以老账号没有 refreshToken，行为必须与之前一致；
+    只有拿到 refreshToken 的账号才走续期路径。
+    """
+
+    class StubRefresh:
+        def __init__(self, result=None, exc=None):
+            self.calls = 0
+            self.result = result
+            self.exc = exc
+
+        def refresh_access_token(self, refresh_token, uid, device_id):
+            self.calls += 1
+            if self.exc:
+                raise self.exc
+            return self.result
+
+    def _account_with_refresh(self, *, age_sec, refresh_token="RT-OLD", uid="u1"):
+        ref = f"cred:{uid}"
+        self.vault.put(ref, json.dumps({
+            "credentialType": "accessToken", "accessToken": "AT-OLD",
+            "refreshToken": refresh_token, "uid": uid, "deviceId": "dev1",
+            "protocol": "v1", "obtainedAt": int(time.time() - age_sec),
+        }))
+        aid = self.store.create_account(
+            remark="测试号", phone_mask="139****0000", role_id="100000000001",
+            role_name="测试角色", server_id="14001", device_id="dev1",
+            credential_ref=ref, credential_type="accessToken", uid=uid,
+            adapter_version="1.2.8", status="ok", enabled=1,
+            obtained_at=int(time.time() - age_sec),
+            token_version=self.vault.version(ref),
+        )
+        return self.store.get_account(aid)
+
+    def _wire(self, stub):
+        self.service.adapter = stub
+        self.service.auth.adapter = stub
+        return stub
+
+    def test_fresh_credential_is_not_renewed(self):
+        """还没到 42 小时就别乱刷，轮换是有代价的。"""
+        acct = self._account_with_refresh(age_sec=3600)
+        stub = self._wire(self.StubRefresh({"accessToken": "AT-NEW", "refreshToken": "RT-NEW"}))
+        cred = self.service._credential(acct)
+        self.assertEqual(stub.calls, 0)
+        self.assertEqual(cred["accessToken"], "AT-OLD")
+
+    def test_no_refresh_token_keeps_old_behaviour(self):
+        """V2 账号没有 refreshToken，必须原样返回，不能报错也不能发请求。"""
+        acct = self._account_with_refresh(age_sec=48 * 3600, refresh_token="")
+        stub = self._wire(self.StubRefresh({"accessToken": "AT-NEW", "refreshToken": "RT-NEW"}))
+        cred = self.service._credential(acct)
+        self.assertEqual(stub.calls, 0)
+        self.assertEqual(cred["accessToken"], "AT-OLD")
+
+    def test_stale_credential_is_renewed_and_persisted(self):
+        """超过 42 小时自动换新，新 refreshToken 必须当场落库（旧的已作废）。"""
+        acct = self._account_with_refresh(age_sec=43 * 3600)
+        stub = self._wire(self.StubRefresh({"accessToken": "AT-NEW", "refreshToken": "RT-NEW",
+                                            "uid": "u1"}))
+        before = acct["token_version"]
+        cred = self.service._credential(acct)
+
+        self.assertEqual(stub.calls, 1)
+        self.assertEqual(cred["accessToken"], "AT-NEW")
+        self.assertEqual(cred["refreshToken"], "RT-NEW")
+
+        stored = self.service.auth.credential(self.store.get_account(acct["id"]))
+        self.assertEqual(stored["refreshToken"], "RT-NEW")
+        self.assertEqual(stored["accessToken"], "AT-NEW")
+        self.assertGreater(stored["_version"], before)
+
+        events = [(a["event"], a["result"]) for a in self.store.audits()]
+        self.assertIn(("refresh", "ok"), events)
+        self.assertEqual(self.store.get_account(acct["id"])["status"], "ok")
+
+    def test_refresh_expired_marks_reauth(self):
+        """长期凭证也失效时，要明确标 reauth，不能静默沿用死 token。"""
+        acct = self._account_with_refresh(age_sec=50 * 3600)
+        stub = self._wire(self.StubRefresh(exc=AdapterError(
+            "refresh_expired", "refreshToken 已失效", status=402)))
+        with self.assertRaises(AuthError) as ctx:
+            self.service._credential(acct)
+        self.assertIn("重新短信登录", str(ctx.exception))
+        row = self.store.get_account(acct["id"])
+        self.assertEqual(row["status"], "reauth")
+        self.assertIn("长期凭证", row["last_error"])
+        events = [(a["event"], a["result"]) for a in self.store.audits()]
+        self.assertIn(("refresh_expired", "reauth"), events)
+
+    def test_network_error_keeps_old_credential(self):
+        """网络抖动不该把账号打成 reauth —— 旧凭证可能还有效。"""
+        acct = self._account_with_refresh(age_sec=43 * 3600)
+        self._wire(self.StubRefresh(exc=AdapterError("network_error", "网络请求失败", status=-1)))
+        cred = self.service._credential(acct)
+        self.assertEqual(cred["accessToken"], "AT-OLD")
+        self.assertEqual(self.store.get_account(acct["id"])["status"], "ok")
+
+    def test_needs_refresh_token_to_be_renewable(self):
+        """UI 判断「能不能自动续期」只看有没有 refreshToken。"""
+        with_rt = self._account_with_refresh(age_sec=0)
+        self.assertTrue(self.service.auth.can_renew(with_rt))
+        no_rt = self._account_with_refresh(age_sec=0, refresh_token="", uid="u2")
+        self.assertFalse(self.service.auth.can_renew(no_rt))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

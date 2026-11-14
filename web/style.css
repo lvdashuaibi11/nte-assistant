@@ -103,6 +103,9 @@ h1 { margin: 0; font-size: 20px; letter-spacing: .3px; }
 .state.reauth { background: var(--warn-bg); color: var(--warn); }
 .state.error { background: var(--danger-bg); color: var(--danger); }
 .state.disabled { background: var(--surface-2); color: var(--muted); }
+.renew { font-size: 11px; padding: 3px 8px; border-radius: 20px; margin-left: 6px;
+  white-space: nowrap; background: var(--ok-bg); color: var(--ok); cursor: help; }
+.renew.off { background: var(--warn-bg); color: var(--warn); }
 
 .metrics { margin: 14px 0 10px; display: grid; gap: 12px; }
 .metric-top { display: flex; justify-content: space-between; align-items: baseline; font-size: 12.5px; }

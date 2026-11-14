@@ -106,7 +106,7 @@ class AuthManager:
                 "expiresIn": int(SESSION_TTL)}
 
     def complete(self, session_id: str, code: str, *, skip_check: bool = False,
-                 probe_v1: bool = False, remark: str = "") -> dict:
+                 probe_v1: bool = True, remark: str = "") -> dict:
         with self._lock:
             sess = self._sessions.get(session_id)
         if not sess:
@@ -119,16 +119,21 @@ class AuthManager:
         tiger_token, tiger_uid, variant = self.adapter.sms_login(
             phone, code, device_id, skip_check=skip_check
         )
-        # V2 是 1.2.8 当前协议；V1 对照默认不做（避免用同一票据额外试探登录端点）
-        login = self.adapter.uc_login(tiger_token, tiger_uid, device_id, protocol="v2")
+        # V1 登录会同时下发 accessToken 与 refreshToken，是自动续期唯一的前置条件；
+        # V2 只给 accessToken（48 小时后必掉）。所以优先 V1，失败再回落 V2。
+        login = None
         if probe_v1:
             try:
                 v1 = self.adapter.uc_login(tiger_token, tiger_uid, device_id, protocol="v1")
                 if v1.get("refreshToken"):
-                    login["refreshToken"] = v1["refreshToken"]
-                    self.log.info("auth.v1", "V1 对照返回了 refreshToken")
+                    login = v1
+                    self.log.info("auth.v1", "V1 登录成功并下发 refreshToken，自动续期可用")
+                else:
+                    self.log.warn("auth.v1", "V1 登录未下发 refreshToken")
             except AdapterError as exc:
-                self.log.warn("auth.v1", f"V1 对照不可用：{exc.kind}")
+                self.log.warn("auth.v1", f"V1 登录不可用，回落 V2：{exc.kind}")
+        if login is None:
+            login = self.adapter.uc_login(tiger_token, tiger_uid, device_id, protocol="v2")
         roles = self.adapter.get_game_roles(login["accessToken"], login["uid"], device_id)
         role = roles[0] if roles else {}
         if not role.get("roleId"):
@@ -142,7 +147,7 @@ class AuthManager:
             role=role,
             phone_mask=phone_mask(phone),
             remark=remark or phone_mask(phone),
-            protocol="v2",
+            protocol=login.get("protocol") or "v2",
         )
         with self._lock:
             self._sessions.pop(session_id, None)
@@ -260,3 +265,63 @@ class AuthManager:
             raise AuthError("凭证内容损坏") from exc
         data["_version"] = version
         return data
+
+    # ------------------------------------------------------------ 续期
+    def can_renew(self, account: dict) -> bool:
+        try:
+            return bool((self.credential(account).get("refreshToken") or "").strip())
+        except AuthError:
+            return False
+
+    def renew(self, account: dict) -> dict:
+        """用 refreshToken 换新凭证，并把轮换后的新值原子写回。
+
+        轮换制的坑：服务端一旦签发新 refreshToken，旧值立刻作废。所以写库前先
+        把响应落一份应急文件，万一加密库写入失败，还能把新值捞回来。
+        """
+        with self._lock:
+            ref = account.get("credential_ref") or f"cred:{account['uid']}"
+            item = self.vault.get(ref)
+            if not item:
+                raise AuthError("凭证不存在，无法续期")
+            text, version = item
+            cred = json.loads(text)
+            rt = (cred.get("refreshToken") or "").strip()
+            if not rt:
+                raise AuthError("该账号没有 refreshToken（V2 登录签发），只能重新短信登录")
+            uid = str(cred.get("uid") or account.get("uid") or "")
+            device_id = cred.get("deviceId") or account.get("device_id") or ""
+
+            data = self.adapter.refresh_access_token(rt, uid, device_id)
+
+            cred["accessToken"] = data["accessToken"]
+            cred["refreshToken"] = data["refreshToken"]
+            if data.get("uid"):
+                cred["uid"] = data["uid"]
+            cred["obtainedAt"] = int(time.time())
+            payload = json.dumps(cred, ensure_ascii=False)
+
+            emergency = None
+            try:
+                emergency = Path("data") / f"refresh_emergency_{int(time.time())}.json"
+                emergency.write_text(payload, encoding="utf-8")
+            except OSError:
+                emergency = None
+            try:
+                new_ver = self.vault.put(ref, payload, expected_version=version)
+            except VaultError as exc:
+                hint = f"，新凭证已暂存到 {emergency}" if emergency else ""
+                raise AuthError(f"续期成功但写回失败：{exc}{hint}") from exc
+            if emergency:
+                try:
+                    emergency.unlink()
+                except OSError:
+                    pass
+
+            self.store.update_account(account["id"], status="ok", last_error="",
+                                      token_version=new_ver)
+            self.store.add_audit(account["id"], "refresh", "ok", new_ver)
+            self.log.info("auth.refresh",
+                          f"账号 {account['id']} 凭证已自动续期（版本 {version}→{new_ver}）")
+            cred["_version"] = new_ver
+            return cred
