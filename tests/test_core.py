@@ -1313,12 +1313,8 @@ class TestAuthSessionResume(BaseCase):
         self.assertIn("重新发送", str(ctx.exception))
 
 
-class TestCredentialRenew(BaseCase):
-    """refreshToken 自动续期：把「48 小时就要重新登录」变成「一直不用管」。
-
-    V2 登录只发 accessToken，所以老账号没有 refreshToken，行为必须与之前一致；
-    只有拿到 refreshToken 的账号才走续期路径。
-    """
+class _RenewBase(BaseCase):
+    """续期相关测试的公共桩：伪造刷新接口 + 造一个带 refreshToken 的账号。"""
 
     class StubRefresh:
         def __init__(self, result=None, exc=None):
@@ -1354,8 +1350,16 @@ class TestCredentialRenew(BaseCase):
         self.service.auth.adapter = stub
         return stub
 
+
+class TestCredentialRenew(_RenewBase):
+    """refreshToken 自动续期：把「隔天就要重新登录」变成「一直不用管」。
+
+    V2 登录只发 accessToken，所以老账号没有 refreshToken，行为必须与之前一致；
+    只有拿到 refreshToken 的账号才走续期路径。
+    """
+
     def test_fresh_credential_is_not_renewed(self):
-        """还没到 42 小时就别乱刷，轮换是有代价的。"""
+        """还没到续期阈值就别乱刷，轮换是有代价的。"""
         acct = self._account_with_refresh(age_sec=3600)
         stub = self._wire(self.StubRefresh({"accessToken": "AT-NEW", "refreshToken": "RT-NEW"}))
         cred = self.service._credential(acct)
@@ -1371,8 +1375,8 @@ class TestCredentialRenew(BaseCase):
         self.assertEqual(cred["accessToken"], "AT-OLD")
 
     def test_stale_credential_is_renewed_and_persisted(self):
-        """超过 42 小时自动换新，新 refreshToken 必须当场落库（旧的已作废）。"""
-        acct = self._account_with_refresh(age_sec=43 * 3600)
+        """超过阈值自动换新，新 refreshToken 必须当场落库（旧的已作废）。"""
+        acct = self._account_with_refresh(age_sec=5 * 3600)
         stub = self._wire(self.StubRefresh({"accessToken": "AT-NEW", "refreshToken": "RT-NEW",
                                             "uid": "u1"}))
         before = acct["token_version"]
@@ -1393,7 +1397,7 @@ class TestCredentialRenew(BaseCase):
 
     def test_refresh_expired_marks_reauth(self):
         """长期凭证也失效时，要明确标 reauth，不能静默沿用死 token。"""
-        acct = self._account_with_refresh(age_sec=50 * 3600)
+        acct = self._account_with_refresh(age_sec=6 * 3600)
         stub = self._wire(self.StubRefresh(exc=AdapterError(
             "refresh_expired", "refreshToken 已失效", status=402)))
         with self.assertRaises(AuthError) as ctx:
@@ -1407,7 +1411,7 @@ class TestCredentialRenew(BaseCase):
 
     def test_network_error_keeps_old_credential(self):
         """网络抖动不该把账号打成 reauth —— 旧凭证可能还有效。"""
-        acct = self._account_with_refresh(age_sec=43 * 3600)
+        acct = self._account_with_refresh(age_sec=5 * 3600)
         self._wire(self.StubRefresh(exc=AdapterError("network_error", "网络请求失败", status=-1)))
         cred = self.service._credential(acct)
         self.assertEqual(cred["accessToken"], "AT-OLD")
@@ -1419,6 +1423,83 @@ class TestCredentialRenew(BaseCase):
         self.assertTrue(self.service.auth.can_renew(with_rt))
         no_rt = self._account_with_refresh(age_sec=0, refresh_token="", uid="u2")
         self.assertFalse(self.service.auth.can_renew(no_rt))
+
+
+class TestAuthExpiredRecovery(_RenewBase):
+    """402 自救：令牌过期但 refreshToken 还活着时，不该让用户重新登录。
+
+    2026-11-15 实测：V1 登录签发的令牌活不过 11.5 小时，而旧逻辑看到 402 直接
+    标 reauth，把一个能自愈的过期变成了必须人工发短信的死局。
+    """
+
+    def _patch_refresh(self, flag):
+        """把 _do_refresh 换成一个「第一次 402、之后成功」的假任务。"""
+        calls = []
+
+        def fake(job, account):
+            calls.append(1)
+            if flag["fail_times"] >= len(calls):
+                self.service._on_adapter_error(
+                    job, account, AdapterError("auth_expired", "凭证已失效", status=402))
+            else:
+                job.status, job.message = "done", "ok"
+
+        self.service._do_refresh = fake
+        return calls
+
+    def test_402_heals_with_refresh_token_and_retries(self):
+        acct = self._account_with_refresh(age_sec=0)
+        stub = self._wire(self.StubRefresh({
+            "accessToken": "AT-NEW", "refreshToken": "RT-NEW", "uid": "u1"}))
+        calls = self._patch_refresh({"fail_times": 1})
+
+        self.service._handle(Job("refresh", acct["id"]))
+
+        self.assertEqual(len(calls), 2)              # 失败一次 + 重试一次
+        self.assertEqual(stub.calls, 1)              # 只换了一次凭证
+        row = self.store.get_account(acct["id"])
+        self.assertEqual(row["status"], "ok")        # 没有被判死
+        self.assertEqual(row["last_error"], "")
+        events = [(a["event"], a["result"]) for a in self.store.audits()]
+        self.assertIn(("refresh", "ok"), events)
+        self.assertNotIn(("auth_expired", "reauth"), events)
+
+    def test_retry_happens_only_once(self):
+        """自救后还是 402，就老老实实标 reauth，不能无限重排队。"""
+        acct = self._account_with_refresh(age_sec=0)
+        self._wire(self.StubRefresh({
+            "accessToken": "AT-NEW", "refreshToken": "RT-NEW", "uid": "u1"}))
+        calls = self._patch_refresh({"fail_times": 99})
+
+        self.service._handle(Job("refresh", acct["id"]))
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(self.store.get_account(acct["id"])["status"], "reauth")
+
+    def test_no_refresh_token_marks_reauth_without_retry(self):
+        acct = self._account_with_refresh(age_sec=0, refresh_token="", uid="u9")
+        stub = self._wire(self.StubRefresh({"accessToken": "AT-NEW", "refreshToken": "RT-NEW"}))
+        calls = self._patch_refresh({"fail_times": 99})
+
+        self.service._handle(Job("refresh", acct["id"]))
+
+        self.assertEqual(len(calls), 1)              # 没有长期凭证，不自救
+        self.assertEqual(stub.calls, 0)
+        self.assertEqual(self.store.get_account(acct["id"])["status"], "reauth")
+
+    def test_refresh_token_also_dead_is_reported(self):
+        """refreshToken 一起死了，审计里要留下 refresh_expired，方便排查。"""
+        acct = self._account_with_refresh(age_sec=0)
+        self._wire(self.StubRefresh(exc=AdapterError(
+            "refresh_expired", "refreshToken 已失效", status=402)))
+        calls = self._patch_refresh({"fail_times": 99})
+
+        self.service._handle(Job("refresh", acct["id"]))
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(self.store.get_account(acct["id"])["status"], "reauth")
+        events = [(a["event"], a["result"]) for a in self.store.audits()]
+        self.assertIn(("refresh_expired", "reauth"), events)
 
 
 if __name__ == "__main__":

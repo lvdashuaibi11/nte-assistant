@@ -319,7 +319,8 @@ class AuthManager:
                     pass
 
             self.store.update_account(account["id"], status="ok", last_error="",
-                                      token_version=new_ver)
+                                      token_version=new_ver,
+                                      obtained_at=int(time.time()))
             self.store.add_audit(account["id"], "refresh", "ok", new_ver)
             self.log.info("auth.refresh",
                           f"账号 {account['id']} 凭证已自动续期（版本 {version}→{new_ver}）")

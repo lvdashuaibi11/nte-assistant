@@ -97,7 +97,7 @@ class Adapter:
             return AdapterError("network_error", "网络请求失败", status=status)
         if status in self.cfg.get("authExpiredStatus", [401, 402]):
             return AdapterError(
-                "auth_expired", "凭证已失效或缺失（V2 需要重新短信登录）", status=status
+                "auth_expired", "凭证已失效（HTTP 402）", status=status
             )
         if status >= 400:
             return AdapterError("api_error", f"HTTP {status}", status=status)

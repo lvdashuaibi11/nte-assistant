@@ -6,6 +6,7 @@
   "gameId": "1289",
   "appVersion": "1.2.8",
   "legacyAppVersion": "1.2.5",
+  "renewAfterSec": 14400,
   "appIdLaohu": "10550",
   "appIdUserCenter": "10551",
   "secret": "89155cc4e8634ec5b1b6364013b23e3e",

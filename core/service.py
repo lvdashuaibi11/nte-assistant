@@ -28,9 +28,12 @@ class WriteDisabled(RuntimeError):
     """写操作总开关关闭时拒绝签到。"""
 
 
-# 凭证 48 小时后失效；提前到 42 小时主动换一次，留出 6 小时容错窗口
-# （工具不是常驻轮询，用户可能隔一天才打开一次）。
-RENEW_AFTER_SEC = 42 * 3600
+# 主动续期阈值。原以为是 48 小时有效期、留 6 小时余量（42h）；2026-11-15 实测
+# V1 登录（appVersion 1.2.5）签发的 accessToken 活不过 11.5 小时就 402，说明
+# 旧协议的令牌寿命远短于 V2。既然有效期读不到（登录响应里没有任何 expire 字段），
+# 就按「远小于最短观察值」来定：每 4 小时换一次，一天 6 个请求，可以忽略。
+# 适配器里可用 renewAfterSec 覆盖。
+RENEW_AFTER_SEC = 4 * 3600
 
 
 @dataclass
@@ -44,6 +47,8 @@ class Job:
     message: str = ""
     created_at: float = field(default_factory=time.time)
     auto: bool = False         # 后台自动发起的任务（如签到后的延迟补投递），文案与手动区分
+    auth_retried: bool = False  # 已经用 refreshToken 自救过一次，防无限重试
+    need_retry: bool = False    # 自救成功后要求重新排队同一次任务
 
     def public(self) -> dict:
         return {k: getattr(self, k) for k in
@@ -339,20 +344,26 @@ class Service:
             self.log.warn("job.busy", f"账号 {account['id']} 并发任务被互斥锁拦截")
             return
         try:
-            if job.kind == "refresh":
-                self._do_refresh(job, account)
-            elif job.kind == "signin":
-                self._do_signin(job, account)
-            elif job.kind == "gacha":
-                self._do_gacha(job, account)
-            elif job.kind == "signinfo":
-                self._do_signinfo(job, account)
-            elif job.kind == "resign":
-                self._do_resign(job, account)
-            elif job.kind == "deliver":
-                self._do_deliver(job, account)
-            else:
-                job.status, job.message = "failed", "未知任务类型"
+            # 第二次机会专门给「凭证过期但 refreshToken 还活着」：_try_recover_auth
+            # 会把 need_retry 置位，这里重跑同一个任务（job.auth_retried 挡住死循环）。
+            for _ in range(2):
+                job.need_retry = False
+                if job.kind == "refresh":
+                    self._do_refresh(job, account)
+                elif job.kind == "signin":
+                    self._do_signin(job, account)
+                elif job.kind == "gacha":
+                    self._do_gacha(job, account)
+                elif job.kind == "signinfo":
+                    self._do_signinfo(job, account)
+                elif job.kind == "resign":
+                    self._do_resign(job, account)
+                elif job.kind == "deliver":
+                    self._do_deliver(job, account)
+                else:
+                    job.status, job.message = "failed", "未知任务类型"
+                if not job.need_retry:
+                    break
         finally:
             lock.release()
 
@@ -366,14 +377,17 @@ class Service:
         return self._renew_if_stale(account, cred)
 
     def _renew_if_stale(self, account: dict, cred: dict) -> dict:
-        """凭证快到 48 小时上限时，用 refreshToken 静默换一张新的。
+        """凭证用满阈值就用 refreshToken 静默换一张新的。
 
         没有 refreshToken（V2 登录签发）的账号直接跳过，行为与旧版一致。
+        阈值默认 4 小时（见 RENEW_AFTER_SEC），适配器可用 renewAfterSec 覆盖。
         """
         if not (cred.get("refreshToken") or "").strip():
             return cred
         age = time.time() - float(cred.get("obtainedAt") or 0)
-        if age < RENEW_AFTER_SEC:
+        cfg = getattr(self.adapter, "cfg", None) or {}      # 测试桩没有 cfg，宽松取值
+        threshold = float(cfg.get("renewAfterSec") or RENEW_AFTER_SEC)
+        if age < threshold:
             return cred
         try:
             return self.auth.renew(account)
@@ -975,10 +989,47 @@ class Service:
         except AdapterError as exc:
             self._on_gacha_error(job, account, exc)
 
+    def _try_recover_auth(self, job: Job, account: dict) -> bool:
+        """402 不等于判死刑：先用 refreshToken 自救一次，成功就重跑同一个任务。
+
+        2026-11-15 踩到的坑：V1 登录签发的 accessToken 寿命远短于预期的 48 小时，
+        不到 12 小时就 402，而此时 refreshToken 还完全有效。旧逻辑直接标「待重登」，
+        等于把一个能自愈的过期当成了必须人工登录的死局。
+        """
+        if job.auth_retried:
+            return False
+        job.auth_retried = True
+        if not self.auth.can_renew(account):
+            return False
+        life = time.time() - float(account.get("obtained_at") or 0)
+        try:
+            self.auth.renew(account)
+        except AdapterError as exc:
+            if exc.kind == "refresh_expired":
+                self.log.warn("auth.recover",
+                              f"账号 {account['id']} refreshToken 也已失效，只能重新登录")
+                self.store.add_audit(account["id"], "refresh_expired", "reauth")
+            else:
+                self.log.warn("auth.recover",
+                              f"账号 {account['id']} 自救失败（{exc.kind}），不重试")
+            return False
+        except AuthError as exc:
+            self.log.warn("auth.recover", f"账号 {account['id']} 自救失败（{exc}）")
+            return False
+        self.log.info(
+            "auth.recover",
+            f"账号 {account['id']} 凭证在 {life/3600:.1f} 小时后过期，"
+            f"已用 refreshToken 换新并重试任务")
+        job.status, job.message = "pending", "凭证已续期，重试中"
+        job.need_retry = True
+        return True
+
     def _on_gacha_error(self, job: Job, account: dict, exc: AdapterError) -> None:
         """抽卡是可选只读功能：失败不污染四项看板的账号 last_error。"""
         job.status = "failed"
         job.message = f"[{exc.kind}] {exc.message}"
+        if exc.kind == "auth_expired" and self._try_recover_auth(job, account):
+            return
         if exc.kind == "auth_expired":
             self.store.update_account(account["id"], status="reauth",
                                       last_error="凭证失效，需重新短信登录"
@@ -990,12 +1041,18 @@ class Service:
     def _on_adapter_error(self, job: Job, account: dict, exc: AdapterError) -> None:
         job.status = "failed"
         job.message = f"[{exc.kind}] {exc.message}"
+        if exc.kind == "auth_expired" and self._try_recover_auth(job, account):
+            return
         if exc.kind == "auth_expired":
+            life = time.time() - float(account.get("obtained_at") or 0)
             self.store.update_account(account["id"], status="reauth",
                                       last_error="凭证失效，需重新短信登录"
                                                  "（在官方塔吉多 App 登录会顶掉这里的凭证，两者不能同时在线）")
             self.store.add_audit(account["id"], "auth_expired", "reauth",
                                  account.get("token_version", 0))
+            self.log.error("auth.expired",
+                           f"账号 {account['id']} 凭证在 {life/3600:.1f} 小时后失效，"
+                           f"且无法用 refreshToken 自救")
         elif exc.kind == "protocol_changed":
             self.store.update_account(account["id"], last_error="疑似协议改版，请更新适配器配置")
             self.store.add_audit(account["id"], "protocol_changed", "warn")
