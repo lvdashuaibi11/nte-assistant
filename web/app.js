@@ -142,7 +142,7 @@ function metricHtml(spec, snap, weekly) {
     // 都市活力：周一 05:00 归满。工具默认就按满显示，不等服务端回填；
     // 只要接口给出本周真实值就用真实值覆盖。角标只是说明当前这个数还没被服务端确认。
     if (p === 'city' && snap && snap.city_assumed) {
-      badges += '<span class="badge" title="周一 05:00 活力归满，工具默认显示满。服务端要等你在游戏里花掉第一点才重算：没花完的号会回显上周残留值、花光的号返回 0，这两种旧数都不会被当成真实余量。进游戏花一点后刷新，即为接口真值。">周重置 · 按满显示</span>';
+      badges += '<span class="badge" title="周一 05:00 活力归满，服务端要等你花掉第一点才重算。工具只在「拿不出证据证明你已经花过」时才按满显示：如果上周末的余量不是 0（说明值变过，服务端已重算），或你今天已经进过游戏（活跃度大于 0），接口给多少就显示多少，包括真的花到 0。进游戏花一点后刷新即可拿到真值。">周重置 · 按满显示</span>';
     }
     if (src === 'estimated') badges += '<span class="badge">推算</span>';
     else if (src === 'frontend_default') badges += '<span class="badge">前端缺省</span>';

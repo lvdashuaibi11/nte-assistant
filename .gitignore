@@ -29,3 +29,4 @@ desktop.ini
 # 本地一次性调试脚本，不入库
 probe_week_after_auth.py
 probe_refresh.py
+probe_city.py

@@ -1049,9 +1049,13 @@ class TestWeeklyFull(BaseCase):
     就会把「满」显示成「空」，这是比不显示更坏的错误。
     """
 
-    def metrics(self, value, max_=700):
-        return {"cityStamina": {"label": "都市活力", "value": value, "max": max_,
-                                "maxSource": "api", "valueSource": "api"}}
+    def metrics(self, value, max_=700, activity=None):
+        out = {"cityStamina": {"label": "都市活力", "value": value, "max": max_,
+                               "maxSource": "api", "valueSource": "api"}}
+        if activity is not None:
+            out["activity"] = {"label": "活跃度", "value": activity, "max": 100,
+                               "maxSource": "frontend_constant", "valueSource": "api"}
+        return out
 
     def test_reset_ts_is_this_week_monday_5am(self):
         now = datetime.datetime(2026, 11, 9, 10, 0).timestamp()   # 周一 10:00
@@ -1080,6 +1084,41 @@ class TestWeeklyFull(BaseCase):
         self.service._apply_weekly_full(aid, m)
         self.assertEqual(m["cityStamina"]["value"], 0)
         self.assertNotIn("assumedFull", m["cityStamina"])
+
+    def test_zero_after_unfinished_last_week_is_real(self):
+        """上周末是 349、今天返回 0：值从非 0 掉到 0，服务端必然重算过，采信真 0。
+
+        这是 v1.2.4 修的核心洞：懒回算只会原样回显上周那个数（349），不会凭空变 0。
+        旧逻辑见 0 就当「未回算」改回满，导致玩家花光了还看见 700。
+        """
+        aid = self.make_account()
+        self.old_snapshot(aid, 349)
+        m = self.metrics(0)
+        self.service._apply_weekly_full(aid, m)
+        city = m["cityStamina"]
+        self.assertEqual(city["value"], 0)
+        self.assertNotIn("assumedFull", city)
+        self.assertNotEqual(city.get("valueSource"), "assumed_full")
+
+    def test_zero_with_active_day_is_real(self):
+        """上周就是 0（花光过）的号，靠当日活跃度做旁证：今天进过游戏 → 采信真 0。"""
+        aid = self.make_account()
+        self.old_snapshot(aid, 0)
+        m = self.metrics(0, activity=100)
+        self.service._apply_weekly_full(aid, m)
+        city = m["cityStamina"]
+        self.assertEqual(city["value"], 0)
+        self.assertNotIn("assumedFull", city)
+
+    def test_zero_without_any_evidence_still_shows_full(self):
+        """上周 0 + 今天没进游戏（活跃度 0）→ 没有证据，仍按未回算处理，显示满。"""
+        aid = self.make_account()
+        self.old_snapshot(aid, 0)
+        m = self.metrics(0, activity=0)
+        self.service._apply_weekly_full(aid, m)
+        city = m["cityStamina"]
+        self.assertEqual(city["value"], 700)
+        self.assertEqual(city["assumedReason"], "zero")
 
     def test_nonzero_value_untouched(self):
         aid = self.make_account()

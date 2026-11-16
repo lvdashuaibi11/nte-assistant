@@ -433,18 +433,24 @@ class Service:
             snap[f"{prefix}_assumed"] = 1
 
     def _apply_weekly_full(self, account_id: int, metrics: dict) -> None:
-        """刷新层：周刷新资源在「重置后、服务端未回算」时按上限显示（v1.1.6）。
+        """刷新层：周刷新资源在「重置后、服务端未回算」时按上限显示（v1.2.4）。
 
-        模型很简单，和用户说的一致：**周一 05:00 就是满的**，默认按满显示；接口给出
-        本周真实值就用真实值覆盖。
+        模型：**周一 05:00 就是满的**，默认按满显示；接口给出本周真实值就用真实值覆盖。
 
-        接口只有两种时机需要拦住，否则会把「满」显示成别的数：
-        · 返回 0 —— 服务端还没被玩家花的第一点触发重算，0 不是余量；
-        · 返回上周残留值（如 256）—— 上周没花完时服务端原样回显，也不是本周余量。
-        两种情况都要求「本周还没读到过任何真实值」；一旦本周出现过真实值，接口给什么
-        就是什么（包括真花到 0），绝不再改。
+        难点在于「服务端未回算时返回 0」和「玩家真的花到 0」在数值上一模一样，
+        不能只看值。所以对 0 额外找旁证，**有证据就采信接口，没证据才按满**：
+
+        · 上周末真实值 > 0 而今天返回 0 —— 值从非 0 掉到 0，说明服务端一定重算过
+          （懒回算只会原样回显上周那个数，不会凭空变 0）。这是最硬的证据。
+        · 当日活跃度 dayvalue > 0 —— 玩家今天进过游戏做过事，而花都市活力正是
+          涨活跃度的那批玩法。这是旁证，用来兜住「上周就是 0、这周又花光」的号。
+
+        两者都不成立（上周 0 + 今天没进游戏）才判「未回算」按满显示。
+        返回值 > 0 时另走「回显上周残留值」的判定。
         """
         reset = week_reset_ts()
+        # 当日活跃度：daily 重置（0 点），用作「今天进过游戏」的旁证
+        activity = float((metrics.get("activity") or {}).get("value") or 0)
         for spec in self.adapter.cfg["metrics"]:
             rule = spec.get("weeklyReset")
             if not rule or spec["key"] != "cityStamina":
@@ -461,6 +467,22 @@ class Service:
                 continue
             reason = None
             if value == 0:
+                prev = self.store.last_city_before(account_id, reset)
+                prev_value = None
+                if prev and prev.get("city_value") is not None:
+                    prev_value = float(prev["city_value"])
+                if prev_value is not None and prev_value > 0:
+                    self.log.info(
+                        "metric.city_real_zero",
+                        f"账号 {account_id} {m['label']} 上周末 {prev_value:g} → 今天 0，"
+                        f"服务端已重算，采信真值")
+                    continue
+                if activity > 0:
+                    self.log.info(
+                        "metric.city_real_zero",
+                        f"账号 {account_id} {m['label']} 返回 0 且今日活跃度 {activity:g}，"
+                        f"判定为已花完，采信真值")
+                    continue
                 reason = "zero"
             else:
                 # 回显 = 跨过重置点后这个数「一动没动」。只认同重置点前 2 天内出现过
@@ -480,7 +502,7 @@ class Service:
             m["valueSource"] = "assumed_full"
             m["assumedFull"] = True
             m["assumedReason"] = reason
-            detail = ("接口返回 0" if reason == "zero"
+            detail = ("接口返回 0 且今日未进游戏" if reason == "zero"
                       else f"接口回显上周残留值 {value:g}")
             self.log.info(
                 "metric.assumed_full",
